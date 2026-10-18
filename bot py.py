@@ -1,3 +1,5 @@
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import os
 import time
 import requests
 
@@ -5,8 +7,7 @@ import requests
 BOT_TOKEN = "8822520706:AAErLqCSmGLyQjsCjHHAVqROePpTIDXtMHw"
 CHAT_ID = "8151656291"
 
-# Saytga kirish ma'lumotlari
-USERNAME = "andijon+fargona"
+USERNAME = "andijon+fergana"
 PASSWORD = "1234"
 
 LOGIN_URL = "https://celogistic.uz/auth/login"
@@ -18,14 +19,30 @@ HEADERS = {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     ),
     "Accept": "application/json",
-    "Content-Type": "application/json",
 }
 
 sent_order_ids = set()
 
 
+# ----- RENDER BEPUL TARIFI UCHUN MINI WEB-SERVER -----
+class HealthCheckHandler(BaseHTTPRequestHandler):
+
+  def do_GET(self):
+    self.send_response(200)
+    self.send_header("Content-type", "text/html")
+    self.end_headers()
+    self.wfile.write(b"Bot Render serverida 24/7 ishlamoqda!")
+
+
+def start_health_server():
+  port = int(os.environ.get("PORT", 10000))
+  server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+  print(f"Health-check port {port}-da ishga tushdi.")
+  server.serve_forever()
+
+
+# ---------------- TELEGRAM VA SAYT FUNKSIYALARI ----------------
 def send_telegram(message):
-  """Telegram bot orqali xabar yuborish"""
   telegram_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
   payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
   try:
@@ -35,29 +52,35 @@ def send_telegram(message):
 
 
 def login_to_site():
-  """Saytga avtomatik login qilib yangi token olish"""
   global BEARER_TOKEN, HEADERS
   print("🔄 Saytga avtomatik login qilinmoqda...")
 
-  payloads = [
-      {"username": USERNAME, "password": PASSWORD},
-      {"login": USERNAME, "password": PASSWORD},
-      {"phone": USERNAME, "password": PASSWORD},
+  attempts = [
+      {"type": "form", "data": {"username": USERNAME, "password": PASSWORD}},
+      {"type": "form", "data": {"login": USERNAME, "password": PASSWORD}},
+      {"type": "json", "data": {"username": USERNAME, "password": PASSWORD}},
+      {"type": "json", "data": {"login": USERNAME, "password": PASSWORD}},
+      {"type": "json", "data": {"phone": USERNAME, "password": PASSWORD}},
   ]
 
-  for payload in payloads:
+  for attempt in attempts:
     try:
-      # Login so'rovida eskirgan Authorization token kelmasligi uchun uni vaqtincha olib tashlaymiz
-      login_headers = HEADERS.copy()
-      login_headers.pop("Authorization", None)
+      req_headers = HEADERS.copy()
+      req_headers.pop("Authorization", None)
 
-      response = requests.post(
-          LOGIN_URL, json=payload, headers=login_headers, timeout=10
-      )
+      if attempt["type"] == "json":
+        req_headers["Content-Type"] = "application/json"
+        res = requests.post(
+            LOGIN_URL, json=attempt["data"], headers=req_headers, timeout=10
+        )
+      else:
+        req_headers["Content-Type"] = "application/x-www-form-urlencoded"
+        res = requests.post(
+            LOGIN_URL, data=attempt["data"], headers=req_headers, timeout=10
+        )
 
-      if response.status_code == 200:
-        data = response.json()
-
+      if res.status_code == 200:
+        data = res.json()
         raw_token = (
             data.get("token")
             or data.get("access_token")
@@ -72,42 +95,27 @@ def login_to_site():
               else raw_token
           )
           HEADERS["Authorization"] = BEARER_TOKEN
-          print(
-              "✅ Muvaffaqiyatli login qilindi! Yangi token avtomatik olindi."
-          )
+          print("✅ Muvaffaqiyatli login qilindi!")
           return True
-        else:
-          print(f"⚠️ Server javob berdi, lekin token topilmadi: {data}")
-      else:
-        print(
-            f"❌ Login urinishi ({list(payload.keys())[0]}): status"
-            f" {response.status_code}"
-        )
     except Exception as e:
-      print(f"❌ Login so'rovi xatoligi: {e}")
+      print(f"❌ Login xatosi: {e}")
 
-  print("❌ Avto-login amalga oshmadi.")
   return False
 
 
 def check_orders():
-  """Saytdan shoshilinch zakazlarni tekshirish"""
   global BEARER_TOKEN
 
-  # Agar token hali olinmagan bo'lsa, login qilamiz
   if not BEARER_TOKEN:
     if not login_to_site():
       return
 
   response = requests.get(ORDERS_URL, headers=HEADERS)
 
-  # Token eskirgan bo'lsa (401), avtomatik qayta login qiladi
   if response.status_code == 401:
     print("⚠️ Status 401: Token eskirgan. Qayta login qilinmoqda...")
     if login_to_site():
-      response = requests.get(
-          ORDERS_URL, headers=HEADERS
-      )  # Yangi token bilan qayta so'rov
+      response = requests.get(ORDERS_URL, headers=HEADERS)
     else:
       return
 
@@ -157,15 +165,24 @@ def check_orders():
         sent_order_ids.add(order_id)
         print(f" Yuborildi: #{order_id}")
 
-  else:
-    print(f"Saytga ulanishda xatolik statusi: {response.status_code}")
 
-
-if __name__ == "__main__":
-  print("Bot ishga tushdi va avto-login bilan 24/7 kuzatmoqda...")
+def run_bot_loop():
   while True:
     try:
       check_orders()
     except Exception as err:
       print(f"Xatolik yuz berdi: {err}")
-    time.sleep(20)  # Har 20 sekundda avtomatik tekshiradi
+    time.sleep(20)
+
+
+if __name__ == "__main__":
+  import threading
+
+  print("Bot ishga tushmoqda...")
+
+  # Render uchun veb-serverni alohida potokda ishga tushiramiz
+  server_thread = threading.Thread(target=start_health_server, daemon=True)
+  server_thread.start()
+
+  # Zakazlarni tekshiruvchi asosiy sikl
+  run_bot_loop()
