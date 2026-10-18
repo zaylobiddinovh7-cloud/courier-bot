@@ -1,5 +1,3 @@
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import os
 import time
 import requests
 
@@ -24,25 +22,8 @@ HEADERS = {
 sent_order_ids = set()
 
 
-# ----- RENDER BEPUL TARIFI UCHUN MINI WEB-SERVER -----
-class HealthCheckHandler(BaseHTTPRequestHandler):
-
-  def do_GET(self):
-    self.send_response(200)
-    self.send_header("Content-type", "text/html")
-    self.end_headers()
-    self.wfile.write(b"Bot Render serverida 24/7 ishlamoqda!")
-
-
-def start_health_server():
-  port = int(os.environ.get("PORT", 10000))
-  server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-  print(f"Health-check port {port}-da ishga tushdi.")
-  server.serve_forever()
-
-
-# ---------------- TELEGRAM VA SAYT FUNKSIYALARI ----------------
 def send_telegram(message):
+  """Telegram bot orqali xabar yuborish"""
   telegram_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
   payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
   try:
@@ -52,12 +33,15 @@ def send_telegram(message):
 
 
 def login_to_site():
+  """Saytga avtomatik login qilib yangi token olish"""
   global BEARER_TOKEN, HEADERS
   print("🔄 Saytga avtomatik login qilinmoqda...")
 
   attempts = [
+      # 1. Form-data formatida (FastAPI / OAuth2 standarti)
       {"type": "form", "data": {"username": USERNAME, "password": PASSWORD}},
       {"type": "form", "data": {"login": USERNAME, "password": PASSWORD}},
+      # 2. JSON formatida
       {"type": "json", "data": {"username": USERNAME, "password": PASSWORD}},
       {"type": "json", "data": {"login": USERNAME, "password": PASSWORD}},
       {"type": "json", "data": {"phone": USERNAME, "password": PASSWORD}},
@@ -95,15 +79,26 @@ def login_to_site():
               else raw_token
           )
           HEADERS["Authorization"] = BEARER_TOKEN
-          print("✅ Muvaffaqiyatli login qilindi!")
+          print(
+              "✅ Muvaffaqiyatli login qilindi! Yangi token avtomatik olindi."
+          )
           return True
-    except Exception as e:
-      print(f"❌ Login xatosi: {e}")
+      else:
+        print(
+            f"❌ Urinish ({attempt['type']} -"
+            f" {list(attempt['data'].keys())[0]}): status {res.status_code} ->"
+            f" {res.text}"
+        )
 
+    except Exception as e:
+      print(f"❌ Login so'rovi xatoligi: {e}")
+
+  print("❌ Avto-login amalga oshmadi.")
   return False
 
 
 def check_orders():
+  """Saytdan shoshilinch zakazlarni tekshirish"""
   global BEARER_TOKEN
 
   if not BEARER_TOKEN:
@@ -165,24 +160,15 @@ def check_orders():
         sent_order_ids.add(order_id)
         print(f" Yuborildi: #{order_id}")
 
+  else:
+    print(f"Saytga ulanishda xatolik statusi: {response.status_code}")
 
-def run_bot_loop():
+
+if __name__ == "__main__":
+  print("Bot ishga tushdi va avto-login bilan 24/7 kuzatmoqda...")
   while True:
     try:
       check_orders()
     except Exception as err:
       print(f"Xatolik yuz berdi: {err}")
     time.sleep(20)
-
-
-if __name__ == "__main__":
-  import threading
-
-  print("Bot ishga tushmoqda...")
-
-  # Render uchun veb-serverni alohida potokda ishga tushiramiz
-  server_thread = threading.Thread(target=start_health_server, daemon=True)
-  server_thread.start()
-
-  # Zakazlarni tekshiruvchi asosiy sikl
-  run_bot_loop()
